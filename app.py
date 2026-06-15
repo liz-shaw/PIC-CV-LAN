@@ -24,7 +24,6 @@ APP_CSS = """
     --pic-text: #0f172a;
     --pic-muted: #64748b;
     --pic-primary: #2563eb;
-    --pic-primary-soft: #dbeafe;
     --pic-good: #16a34a;
     --pic-warn: #d97706;
 }
@@ -177,7 +176,7 @@ APP_CSS = """
 
 .pic-summary-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 10px;
     margin-top: 12px;
 }
@@ -190,7 +189,7 @@ APP_CSS = """
 }
 
 .pic-metric-value {
-    font-size: 24px;
+    font-size: 22px;
     line-height: 1.1;
     font-weight: 900;
     letter-spacing: -0.03em;
@@ -244,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PIC-CV-LAN local image vocabulary app")
     parser.add_argument("--device", default="cpu", help="Inference device: cpu, cuda:0, 0, etc. Default: cpu")
     parser.add_argument("--model", default="yolo11n.pt", help="YOLO model file/name. Default: yolo11n.pt")
-    parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold. Default: 0.35")
+    parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold. Default: 0.25")
     parser.add_argument("--imgsz", type=int, default=640, help="Inference image size. Default: 640")
     parser.add_argument("--host", default=None, help="Server host. Use 0.0.0.0 for LAN/server access")
     parser.add_argument("--port", type=int, default=None, help="Server port, for example 7860")
@@ -264,14 +263,21 @@ detector = ObjectDetector(
 vocab_store = VocabStore(VOCAB_PATH)
 
 
-EMPTY_COLUMNS = ["English", "中文", "Deutsch", "Confidence", "Source"]
+EMPTY_COLUMNS = ["English", "中文", "Deutsch", "Count", "Confidence", "Source"]
+IMAGE_SIZE_CHOICES = [320, 640, 960, 1280]
+INITIAL_IMAGE_SIZE = args.imgsz if args.imgsz in IMAGE_SIZE_CHOICES else 640
 
 
 def build_status_html(
     *,
-    total: int,
+    row_count: int,
+    instance_count: int,
+    unique_word_count: int,
     unknown_count: int,
     output_file: Path | None,
+    confidence_threshold: float | None = None,
+    image_size: int | None = None,
+    result_mode: str = "合并同类词条",
     has_image: bool = True,
 ) -> str:
     if not has_image:
@@ -281,15 +287,19 @@ def build_status_html(
         </div>
         """
 
-    if total == 0:
+    conf_text = "默认" if confidence_threshold is None else f"{confidence_threshold:.2f}"
+    imgsz_text = "默认" if image_size is None else str(image_size)
+
+    if row_count == 0:
         return f"""
         <div class="pic-summary">
             <div class="pic-warning">没有识别到置信度足够高的常见物品。</div>
-            <div class="pic-empty">可以换一张更清晰的图片，或者降低阈值。当前设备：{args.device}，输入尺寸：{args.imgsz}。</div>
+            <div class="pic-empty">可以降低置信度阈值、把图片尺寸调到 960，或换一张主体更清晰的图片。当前设备：{args.device}，conf={conf_text}，imgsz={imgsz_text}。</div>
             <div class="pic-summary-grid">
-                <div class="pic-metric"><div class="pic-metric-value">0</div><div class="pic-metric-label">识别物品</div></div>
-                <div class="pic-metric"><div class="pic-metric-value">{unknown_count}</div><div class="pic-metric-label">未收录词</div></div>
-                <div class="pic-metric"><div class="pic-metric-value">CPU</div><div class="pic-metric-label">默认友好模式</div></div>
+                <div class="pic-metric"><div class="pic-metric-value">0</div><div class="pic-metric-label">词条行</div></div>
+                <div class="pic-metric"><div class="pic-metric-value">0</div><div class="pic-metric-label">检测实例</div></div>
+                <div class="pic-metric"><div class="pic-metric-value">{conf_text}</div><div class="pic-metric-label">置信度阈值</div></div>
+                <div class="pic-metric"><div class="pic-metric-value">{imgsz_text}</div><div class="pic-metric-label">图片尺寸</div></div>
             </div>
         </div>
         """
@@ -302,24 +312,38 @@ def build_status_html(
     <div class="pic-summary">
         <div class="pic-success">识别完成。结果已经生成，可以下载 TSV 导入 Anki。</div>
         <div class="pic-summary-grid">
-            <div class="pic-metric"><div class="pic-metric-value">{total}</div><div class="pic-metric-label">识别物品</div></div>
+            <div class="pic-metric"><div class="pic-metric-value">{row_count}</div><div class="pic-metric-label">词条行</div></div>
+            <div class="pic-metric"><div class="pic-metric-value">{instance_count}</div><div class="pic-metric-label">检测实例</div></div>
+            <div class="pic-metric"><div class="pic-metric-value">{unique_word_count}</div><div class="pic-metric-label">不同英文词</div></div>
             <div class="pic-metric"><div class="pic-metric-value {unknown_class}">{unknown_text}</div><div class="pic-metric-label">词典覆盖</div></div>
-            <div class="pic-metric"><div class="pic-metric-value">{args.device}</div><div class="pic-metric-label">推理设备</div></div>
         </div>
-        <div class="pic-empty" style="margin-top: 12px;">导出文件：{export_text}</div>
+        <div class="pic-empty" style="margin-top: 12px;">模式：{result_mode}；设备：{args.device}；conf={conf_text}；imgsz={imgsz_text}；导出文件：{export_text}</div>
     </div>
     """
 
 
-def detect_and_translate(image: Image.Image | None):
+def detect_and_translate(
+    image: Image.Image | None,
+    confidence_threshold: float,
+    image_size: int,
+    result_mode: str,
+    max_detections: int,
+):
     if image is None:
         empty_df = pd.DataFrame(columns=EMPTY_COLUMNS)
-        return None, build_status_html(total=0, unknown_count=0, output_file=None, has_image=False), empty_df, None
+        return None, build_status_html(row_count=0, instance_count=0, unique_word_count=0, unknown_count=0, output_file=None, has_image=False), empty_df, None
 
-    detections, annotated_image = detector.detect(image)
+    unique_labels = result_mode == "合并同类词条"
+    detections, annotated_image = detector.detect(
+        image,
+        confidence_threshold=float(confidence_threshold),
+        image_size=int(image_size),
+        unique_labels=unique_labels,
+        max_detections=int(max_detections),
+    )
 
     rows: list[dict[str, object]] = []
-    unknown_count = 0
+    unknown_words: set[str] = set()
 
     for detection in detections:
         entry = vocab_store.lookup(detection.english)
@@ -327,7 +351,7 @@ def detect_and_translate(image: Image.Image | None):
             append_unknown_word(detection.english, UNKNOWN_PATH)
             chinese = "待补充"
             german = "待补充"
-            unknown_count += 1
+            unknown_words.add(detection.english)
         else:
             chinese = entry.chinese
             german = entry.german
@@ -337,27 +361,32 @@ def detect_and_translate(image: Image.Image | None):
                 "English": detection.english,
                 "中文": chinese,
                 "Deutsch": german,
+                "Count": detection.count,
                 "Confidence": round(detection.confidence, 3),
                 "Source": f"YOLO/{args.device}",
             }
         )
 
-    if rows:
-        output_file = export_rows_to_tsv(rows, OUTPUT_PATH)
-    else:
-        output_file = None
-
+    output_file = export_rows_to_tsv(rows, OUTPUT_PATH) if rows else None
     df = pd.DataFrame(rows, columns=EMPTY_COLUMNS)
+
+    instance_count = int(sum(int(row.get("Count", 1)) for row in rows))
+    unique_word_count = len({str(row.get("English", "")) for row in rows if row.get("English")})
     status_html = build_status_html(
-        total=len(rows),
-        unknown_count=unknown_count,
+        row_count=len(rows),
+        instance_count=instance_count,
+        unique_word_count=unique_word_count,
+        unknown_count=len(unknown_words),
         output_file=output_file,
+        confidence_threshold=float(confidence_threshold),
+        image_size=int(image_size),
+        result_mode=result_mode,
         has_image=True,
     )
     return annotated_image, status_html, df, str(output_file) if output_file else None
 
 
-hero_html = f"""
+hero_html = """
 <div class="pic-hero">
     <div class="pic-hero-top">
         <div class="pic-brand">
@@ -370,13 +399,13 @@ hero_html = f"""
         <div class="pic-badges">
             <span class="pic-badge">No AI Token</span>
             <span class="pic-badge">CPU First</span>
-            <span class="pic-badge">YOLO Local</span>
+            <span class="pic-badge">Tunable Detection</span>
             <span class="pic-badge">Anki Ready</span>
         </div>
     </div>
     <div class="pic-steps">
         <div class="pic-step"><div class="pic-step-num">STEP 01</div><div class="pic-step-title">上传图片</div><div class="pic-step-desc">选择照片，或用摄像头拍摄现实物品。</div></div>
-        <div class="pic-step"><div class="pic-step-num">STEP 02</div><div class="pic-step-title">本地识别</div><div class="pic-step-desc">YOLO 在本机/服务器上识别主要物体。</div></div>
+        <div class="pic-step"><div class="pic-step-num">STEP 02</div><div class="pic-step-title">调节识别</div><div class="pic-step-desc">降低置信度或增大图片尺寸，让更多物体显示出来。</div></div>
         <div class="pic-step"><div class="pic-step-num">STEP 03</div><div class="pic-step-title">三语映射</div><div class="pic-step-desc">查询 vocab.tsv，输出 English / 中文 / Deutsch。</div></div>
         <div class="pic-step"><div class="pic-step-num">STEP 04</div><div class="pic-step-title">导出复习</div><div class="pic-step-desc">下载 TSV，导入 Anki 做图像词汇积累。</div></div>
     </div>
@@ -388,44 +417,83 @@ with gr.Blocks(title="PIC-CV-LAN", css=APP_CSS, theme=gr.themes.Soft()) as demo:
 
     with gr.Row(equal_height=True):
         with gr.Column(scale=5, elem_classes=["pic-card"]):
-            gr.HTML('<div class="pic-section-title">输入图片</div><div class="pic-section-note">主体越清楚，识别越稳。CPU 服务器建议先用单张图片，不要直接上视频流。</div>')
+            gr.HTML('<div class="pic-section-title">输入图片</div><div class="pic-section-note">主体越清楚，识别越稳。想识别更多，就先把置信度调低到 0.15～0.25。</div>')
             image_input = gr.Image(
                 type="pil",
                 sources=["upload", "webcam"],
                 label="上传图片或使用摄像头",
-                height=430,
+                height=390,
             )
+
+            with gr.Accordion("识别设置", open=True):
+                confidence_slider = gr.Slider(
+                    minimum=0.05,
+                    maximum=0.80,
+                    step=0.05,
+                    value=args.conf,
+                    label="置信度阈值",
+                    info="越低显示越多，但误识别会增加。推荐先试 0.20。",
+                )
+                image_size_choice = gr.Radio(
+                    choices=IMAGE_SIZE_CHOICES,
+                    value=INITIAL_IMAGE_SIZE,
+                    label="图片尺寸 imgsz",
+                    info="越大越容易识别小物体，但 CPU 更慢。",
+                )
+                result_mode = gr.Radio(
+                    choices=["合并同类词条", "显示每个实例"],
+                    value="合并同类词条",
+                    label="结果模式",
+                    info="合并模式适合背单词；实例模式适合检查到底识别出了几个框。",
+                )
+                max_det_slider = gr.Slider(
+                    minimum=5,
+                    maximum=300,
+                    step=5,
+                    value=100,
+                    label="最大检测数量",
+                    info="密集场景可调大，一般保持 100 足够。",
+                )
+
             run_button = gr.Button("开始识别并生成词条", variant="primary", elem_classes=["pic-primary-button"])
 
         with gr.Column(scale=5, elem_classes=["pic-card"]):
-            gr.HTML('<div class="pic-section-title">检测预览</div><div class="pic-section-note">识别到的物体会在图片上标注。没有框不代表失败，可能是置信度不足或类别不在模型内。</div>')
-            annotated_output = gr.Image(label="检测标注图", height=430)
+            gr.HTML('<div class="pic-section-title">检测预览</div><div class="pic-section-note">识别到的物体会在图片上标注。小物体少时，试试 imgsz=960；框太乱时，提高置信度。</div>')
+            annotated_output = gr.Image(label="检测标注图", height=560)
 
     with gr.Row(equal_height=True):
         with gr.Column(scale=4, elem_classes=["pic-card"]):
             gr.HTML('<div class="pic-section-title">运行状态</div>')
             status_output = gr.HTML(
-                build_status_html(total=0, unknown_count=0, output_file=None, has_image=False)
+                build_status_html(row_count=0, instance_count=0, unique_word_count=0, unknown_count=0, output_file=None, has_image=False)
             )
             file_output = gr.File(label="下载 Anki TSV")
 
         with gr.Column(scale=6, elem_classes=["pic-card"]):
-            gr.HTML('<div class="pic-section-title">三语词条结果</div><div class="pic-section-note">德语名词默认带冠词，适合直接进入记忆卡片。</div>')
+            gr.HTML('<div class="pic-section-title">三语词条结果</div><div class="pic-section-note">Count 表示同类物品数量；德语名词默认带冠词。</div>')
             table_output = gr.Dataframe(
                 label="English / 中文 / Deutsch",
                 interactive=False,
-                row_count=(6, "dynamic"),
-                col_count=(5, "fixed"),
+                row_count=(8, "dynamic"),
+                col_count=(6, "fixed"),
             )
 
-    with gr.Accordion("使用建议 / Troubleshooting", open=False):
+    with gr.Accordion("为什么识别物品少？", open=True):
         gr.Markdown(
             f"""
-            - 当前模型：`{args.model}`；设备：`{args.device}`；图片尺寸：`{args.imgsz}`；置信度阈值：`{args.conf}`。
-            - CPU 慢是正常的。弱服务器可运行：`python app.py --device cpu --imgsz 320`。
-            - 识别不到时，优先换清晰图片；其次再考虑降低 `--conf`。
-            - 未收录词会写入 `unknown_words.tsv`，后续可以手动补充中文和德语。
-            - 在服务器上给局域网访问：`python app.py --host 0.0.0.0 --port 7860`。
+            主要原因有三个：
+
+            1. **YOLO 默认是固定类别检测器**：它擅长识别人、猫、狗、杯子、椅子、车、书、键盘等常见类别，但不是开放词典视觉大模型。
+            2. **之前版本合并了同类物品**：比如图里有 5 本书，表格只显示一行 `book`。现在增加了 `Count`，也可以切换到“显示每个实例”。
+            3. **置信度阈值会过滤结果**：阈值越高，结果越干净但越少；阈值越低，结果越多但误识别更多。
+
+            推荐设置：
+
+            - 想多识别：`conf=0.15～0.25`，`imgsz=640 或 960`。
+            - CPU 很弱：`conf=0.20`，`imgsz=320 或 640`。
+            - 检查到底有多少检测框：结果模式选择“显示每个实例”。
+
+            当前启动参数：模型 `{args.model}`；设备 `{args.device}`；默认 imgsz `{args.imgsz}`；默认 conf `{args.conf}`。
             """
         )
 
@@ -433,7 +501,7 @@ with gr.Blocks(title="PIC-CV-LAN", css=APP_CSS, theme=gr.themes.Soft()) as demo:
 
     run_button.click(
         fn=detect_and_translate,
-        inputs=image_input,
+        inputs=[image_input, confidence_slider, image_size_choice, result_mode, max_det_slider],
         outputs=[annotated_output, status_output, table_output, file_output],
     )
 
