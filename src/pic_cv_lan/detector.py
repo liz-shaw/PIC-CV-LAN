@@ -13,6 +13,7 @@ from ultralytics import YOLO
 class Detection:
     english: str
     confidence: float
+    count: int = 1
 
 
 class ObjectDetector:
@@ -25,7 +26,7 @@ class ObjectDetector:
     def __init__(
         self,
         model_name: str = "yolo11n.pt",
-        confidence_threshold: float = 0.35,
+        confidence_threshold: float = 0.25,
         device: str = "cpu",
         image_size: int = 640,
     ) -> None:
@@ -35,18 +36,37 @@ class ObjectDetector:
         self.image_size = image_size
         self.model = YOLO(model_name)
 
-    def detect(self, image: Image.Image | str | Path) -> tuple[list[Detection], np.ndarray | None]:
-        """Return unique labels with max confidence and an annotated image array."""
+    def detect(
+        self,
+        image: Image.Image | str | Path,
+        confidence_threshold: float | None = None,
+        image_size: int | None = None,
+        unique_labels: bool = True,
+        max_detections: int = 100,
+    ) -> tuple[list[Detection], np.ndarray | None]:
+        """Detect objects from an image.
+
+        Args:
+            image: PIL image or image path.
+            confidence_threshold: Runtime confidence threshold. Lower values show more boxes but may add false positives.
+            image_size: Runtime inference size. Larger values may detect small objects better but run slower on CPU.
+            unique_labels: If True, merge duplicate labels and keep a count. If False, return every detected instance.
+            max_detections: Maximum number of raw detections returned by YOLO.
+        """
+
+        effective_conf = self.confidence_threshold if confidence_threshold is None else confidence_threshold
+        effective_imgsz = self.image_size if image_size is None else image_size
 
         results = self.model.predict(
             source=image,
-            conf=self.confidence_threshold,
+            conf=effective_conf,
             device=self.device,
-            imgsz=self.image_size,
+            imgsz=effective_imgsz,
+            max_det=max_detections,
             verbose=False,
         )
         names: dict[int, str] = self.model.names
-        label_to_confidence: dict[str, float] = {}
+        raw_detections: list[Detection] = []
         annotated: np.ndarray | None = None
 
         for result in results:
@@ -62,14 +82,25 @@ class ObjectDetector:
             for box in boxes:
                 cls_id = int(box.cls[0])
                 confidence = float(box.conf[0])
-                if confidence < self.confidence_threshold:
+                if confidence < effective_conf:
                     continue
 
                 label = names[cls_id]
-                label_to_confidence[label] = max(label_to_confidence.get(label, 0.0), confidence)
+                raw_detections.append(Detection(english=label, confidence=confidence, count=1))
 
-        detections = [
-            Detection(english=label, confidence=confidence)
-            for label, confidence in sorted(label_to_confidence.items(), key=lambda item: -item[1])
+        raw_detections.sort(key=lambda item: -item.confidence)
+
+        if not unique_labels:
+            return raw_detections[:max_detections], annotated
+
+        label_to_stats: dict[str, tuple[float, int]] = {}
+        for detection in raw_detections:
+            best_confidence, count = label_to_stats.get(detection.english, (0.0, 0))
+            label_to_stats[detection.english] = (max(best_confidence, detection.confidence), count + 1)
+
+        merged_detections = [
+            Detection(english=label, confidence=confidence, count=count)
+            for label, (confidence, count) in label_to_stats.items()
         ]
-        return detections, annotated
+        merged_detections.sort(key=lambda item: (-item.confidence, item.english))
+        return merged_detections, annotated
