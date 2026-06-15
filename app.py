@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import gradio as gr
@@ -15,8 +16,26 @@ VOCAB_PATH = Path("vocab.tsv")
 UNKNOWN_PATH = Path("unknown_words.tsv")
 OUTPUT_PATH = Path("outputs/latest_image_vocab.tsv")
 
-# Load once when the app starts.
-detector = ObjectDetector(model_name="yolo11n.pt", confidence_threshold=0.35)
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="PIC-CV-LAN local image vocabulary app")
+    parser.add_argument("--device", default="cpu", help="Inference device: cpu, cuda:0, 0, etc. Default: cpu")
+    parser.add_argument("--model", default="yolo11n.pt", help="YOLO model file/name. Default: yolo11n.pt")
+    parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold. Default: 0.35")
+    parser.add_argument("--imgsz", type=int, default=640, help="Inference image size. Default: 640")
+    parser.add_argument("--share", action="store_true", help="Create a temporary public Gradio link")
+    return parser
+
+
+args = build_parser().parse_args()
+
+# Load once when the app starts. Default device is CPU for non-NVIDIA servers.
+detector = ObjectDetector(
+    model_name=args.model,
+    confidence_threshold=args.conf,
+    device=args.device,
+    image_size=args.imgsz,
+)
 vocab_store = VocabStore(VOCAB_PATH)
 
 
@@ -47,18 +66,18 @@ def detect_and_translate(image: Image.Image | None):
                 "中文": chinese,
                 "Deutsch": german,
                 "Confidence": round(detection.confidence, 3),
-                "Source": "YOLO",
+                "Source": f"YOLO/{args.device}",
             }
         )
 
     if rows:
         output_file = export_rows_to_tsv(rows, OUTPUT_PATH)
-        message = f"识别到 {len(rows)} 个物品。"
+        message = f"识别到 {len(rows)} 个物品。当前推理设备：{args.device}。"
         if unknown_count:
             message += f" 其中 {unknown_count} 个词未收录，已写入 unknown_words.tsv。"
     else:
         output_file = None
-        message = "没有识别到置信度足够高的常见物品。可以换一张更清晰的图片，或降低阈值。"
+        message = f"没有识别到置信度足够高的常见物品。当前推理设备：{args.device}。可以换一张更清晰的图片，或降低阈值。"
 
     df = pd.DataFrame(rows, columns=["English", "中文", "Deutsch", "Confidence", "Source"])
     return annotated_image, df, str(output_file) if output_file else None, message
@@ -66,10 +85,11 @@ def detect_and_translate(image: Image.Image | None):
 
 with gr.Blocks(title="PIC-CV-LAN") as demo:
     gr.Markdown(
-        """
+        f"""
         # PIC-CV-LAN
         本地图片物品识别 → English / 中文 / Deutsch → TSV 导出。  
-        不需要 AI token；首次运行需要下载 YOLO 模型文件。
+        不需要 AI token；首次运行需要下载 YOLO 模型文件。  
+        当前推理设备：`{args.device}`
         """
     )
 
@@ -94,4 +114,4 @@ with gr.Blocks(title="PIC-CV-LAN") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=args.share)
