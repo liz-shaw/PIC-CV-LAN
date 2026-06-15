@@ -18,6 +18,8 @@
 - 不需要 OpenAI / Claude / Gemini 等 AI token
 - 使用本地 YOLO 模型做物体检测
 - 默认使用 CPU，适合没有 NVIDIA GPU 的服务器
+- 支持在界面调节置信度、图片尺寸、最大检测数量
+- 支持“合并同类词条”和“显示每个实例”两种结果模式
 - 使用本地 `vocab.tsv` 做英中德映射
 - 支持图片上传与摄像头输入
 - 支持导出 Anki 可用的 TSV
@@ -61,9 +63,41 @@ python app.py --device cuda:0
 python app.py --device cpu --imgsz 320
 ```
 
+想识别更多物品，可以先试：
+
+```bash
+python app.py --device cpu --imgsz 640 --conf 0.20
+```
+
+服务器给局域网访问：
+
+```bash
+python app.py --device cpu --imgsz 640 --host 0.0.0.0 --port 7860
+```
+
 然后打开终端中显示的本地网址。
 
 首次运行会自动下载 YOLO 模型文件，例如 `yolo11n.pt`。之后可以本地运行，不需要 AI token。
+
+## 为什么识别的物品少？
+
+常见原因：
+
+1. **YOLO 是固定类别检测器**：它擅长常见物体，例如 person、cat、dog、cup、chair、book、keyboard、cell phone、car 等，但不是开放词典视觉大模型。
+2. **同类物品默认合并**：图里有 5 本书，合并模式下只显示一行 `book`，但 `Count` 会显示数量。
+3. **置信度阈值过高**：阈值越高，结果越干净但越少；阈值越低，结果越多但误识别更多。
+4. **图片尺寸过小**：`imgsz=320` 更快，但小物体容易漏；`imgsz=640/960` 更可能识别小物体，但 CPU 更慢。
+
+推荐调参：
+
+```text
+想多识别：conf=0.15～0.25，imgsz=640 或 960
+CPU 很弱：conf=0.20，imgsz=320 或 640
+检查每个检测框：结果模式选择“显示每个实例”
+背单词导出：结果模式选择“合并同类词条”
+```
+
+如果你想识别 YOLO 类别之外的东西，例如插线板、眼药水、护肤品、具体品牌型号，需要后续接入开放词汇检测模型或本地视觉大模型兜底。
 
 ## CPU 服务器说明
 
@@ -72,7 +106,7 @@ python app.py --device cpu --imgsz 320
 如果服务器性能较弱，优先使用：
 
 ```bash
-python app.py --device cpu --imgsz 320 --conf 0.35
+python app.py --device cpu --imgsz 320 --conf 0.20
 ```
 
 不要一开始处理视频流或高并发请求。这个项目 V1 的定位是个人学习工具，不是生产级视觉服务。
@@ -94,7 +128,7 @@ cup	杯子	die Tasse	common object
 当前导出字段：
 
 ```tsv
-English	中文	Deutsch	Confidence	Source
+English	中文	Deutsch	Count	Confidence	Source
 ```
 
 可以直接导入 Anki，也可以后续扩展为：
