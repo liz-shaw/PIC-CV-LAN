@@ -16,17 +16,35 @@ class Detection:
 
 
 class ObjectDetector:
-    """YOLO object detector wrapper."""
+    """YOLO object detector wrapper.
 
-    def __init__(self, model_name: str = "yolo11n.pt", confidence_threshold: float = 0.35) -> None:
+    The default device is CPU so the app works on servers without NVIDIA GPUs.
+    Change device to "cuda:0" only when CUDA is actually available.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "yolo11n.pt",
+        confidence_threshold: float = 0.35,
+        device: str = "cpu",
+        image_size: int = 640,
+    ) -> None:
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
+        self.device = device
+        self.image_size = image_size
         self.model = YOLO(model_name)
 
     def detect(self, image: Image.Image | str | Path) -> tuple[list[Detection], np.ndarray | None]:
         """Return unique labels with max confidence and an annotated image array."""
 
-        results = self.model(image)
+        results = self.model.predict(
+            source=image,
+            conf=self.confidence_threshold,
+            device=self.device,
+            imgsz=self.image_size,
+            verbose=False,
+        )
         names: dict[int, str] = self.model.names
         label_to_confidence: dict[str, float] = {}
         annotated: np.ndarray | None = None
