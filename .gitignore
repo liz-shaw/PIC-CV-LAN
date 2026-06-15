@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# App outputs
+outputs/
+*.log
+
+# Model files
+*.pt
+*.onnx
+*.engine
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
